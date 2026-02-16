@@ -5,10 +5,16 @@ import math
 from telegram import Bot
 
 # --- CONFIGURATION (Keep your current keys here) ---
-APP_ID = '1089'
-DERIV_TOKEN = '8yHoswH7HrjMB2E'
-TELEGRAM_TOKEN = '8561533318:AAEe80EotxdBAbHpScbyW5c35iUG5j8bOHk'
-CHAT_ID = '7128665875'
+import os
+from dotenv import load_dotenv
+
+load_dotenv() # This pulls the data from your hidden .env file
+
+# --- CONFIGURATION (Safe Version) ---
+APP_ID = os.getenv('APP_ID')
+DERIV_TOKEN = os.getenv('DERIV_TOKEN')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 
 bot = Bot(token=TELEGRAM_TOKEN)
 last_price = 0  # Global variable to store the latest price
