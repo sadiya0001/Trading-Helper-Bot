@@ -1,0 +1,61 @@
+import asyncio
+import json
+import websockets
+import math
+from telegram import Bot
+
+# --- CONFIGURATION (Keep your current keys here) ---
+APP_ID = '1089'
+DERIV_TOKEN = '8yHoswH7HrjMB2E'
+TELEGRAM_TOKEN = '8561533318:AAEe80EotxdBAbHpScbyW5c35iUG5j8bOHk'
+CHAT_ID = '7128665875'
+
+bot = Bot(token=TELEGRAM_TOKEN)
+last_price = 0  # Global variable to store the latest price
+
+async def check_strategy(candles):
+    global last_price
+    curr = candles[-1]
+    last_price = curr['close'] # Update the latest price
+    
+    # ... (Your existing RSI/BB strategy logic goes here) ...
+
+async def handle_telegram_commands():
+    """Checks for new messages like /price on Telegram every few seconds"""
+    last_update_id = 0
+    while True:
+        try:
+            updates = await bot.get_updates(offset=last_update_id + 1, timeout=10)
+            for update in updates:
+                last_update_id = update.update_id
+                if update.message and update.message.text == "/price":
+                    await bot.send_message(chat_id=CHAT_ID, text=f"📊 Current Volatility 100 Price: {last_price}")
+        except Exception:
+            pass
+        await asyncio.sleep(2) # Don't overwhelm the API
+
+async def main():
+    url = f"wss://ws.binaryws.com/websockets/v3?app_id={APP_ID}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"authorize": DERIV_TOKEN}))
+        await ws.send(json.dumps({"ticks_history": "R_100", "count": 50, "end": "latest", "granularity": 60, "style": "candles", "subscribe": 1}))
+        
+        print("Bot is active. Try sending /price in Telegram!")
+        await bot.send_message(chat_id=CHAT_ID, text="🤖 Trading Helper is ONLINE. Send /price to check the market.")
+        
+        # Run the market watcher and the telegram listener at the same time
+        await asyncio.gather(
+            market_loop(ws),
+            handle_telegram_commands()
+        )
+
+async def market_loop(ws):
+    while True:
+        msg = json.loads(await ws.recv())
+        if 'candles' in msg:
+            await check_strategy(msg['candles'])
+        elif 'ohlc' in msg:
+            global last_price
+            last_price = msg['ohlc']['close']
+
+asyncio.run(main())
