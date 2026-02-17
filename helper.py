@@ -64,4 +64,43 @@ async def market_loop(ws):
             global last_price
             last_price = msg['ohlc']['close']
 
+async def check_strategy(candles):
+    global last_price
+    # Need at least 2 candles to compare current vs previous
+    if len(candles) < 2: return
+    
+    curr = candles[-1]
+    prev = candles[-2]
+    last_price = curr['close']
+    
+    # --- Pattern Logic ---
+    pattern_name = None
+    
+    # 1. Bullish Engulfing
+    if curr['close'] > prev['open'] and curr['open'] < prev['close'] and prev['close'] < prev['open']:
+        pattern_name = "Bullish Engulfing 📈"
+        
+    # 2. Bearish Engulfing
+    elif curr['close'] < prev['open'] and curr['open'] > prev['close'] and prev['close'] > prev['open']:
+        pattern_name = "Bearish Engulfing 📉"
+        
+    # 3. Hammer (Bottom reversal)
+    body = abs(curr['close'] - curr['open'])
+    lower_wick = min(curr['open'], curr['close']) - curr['low']
+    if lower_wick > (body * 2) and (curr['high'] - max(curr['open'], curr['close'])) < body:
+        pattern_name = "Hammer 🔨"
+
+    # --- RSI & BB Integration (Optional Confluence) ---
+    # If a pattern is found, send the message
+    if pattern_name:
+        message = (
+            f"🎯 **New Signal Detected!**\n"
+            f"Pattern: {pattern_name}\n"
+            f"Price: {curr['close']}\n"
+            f"Index: Volatility 100"
+        )
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+        print(f"Signal sent: {pattern_name}")
+            
+
 asyncio.run(main())
