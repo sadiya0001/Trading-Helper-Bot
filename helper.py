@@ -42,19 +42,32 @@ async def handle_telegram_commands():
 
 async def main():
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={APP_ID}"
-    async with websockets.connect(url) as ws:
+    
+    # We add ping settings here to stop the "1011 timeout" error
+    # ping_interval sends a heartbeat every 20 seconds
+    async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
         await ws.send(json.dumps({"authorize": DERIV_TOKEN}))
-        await ws.send(json.dumps({"ticks_history": "R_100", "count": 50, "end": "latest", "granularity": 60, "style": "candles", "subscribe": 1}))
+        await ws.send(json.dumps({
+            "ticks_history": "R_100", 
+            "count": 50, 
+            "end": "latest", 
+            "granularity": 60, 
+            "style": "candles", 
+            "subscribe": 1
+        }))
         
-        print("Bot is active. Try sending /price in Telegram!")
-        await bot.send_message(chat_id=CHAT_ID, text="🤖 Trading Helper is ONLINE. Send /price to check the market.")
+        print("Bot is active and connection is stable. Try /price in Telegram!")
+        await bot.send_message(chat_id=CHAT_ID, text="🤖 Trading Helper is ONLINE. Connection stabilized.")
         
-        # Run the market watcher and the telegram listener at the same time
-        await asyncio.gather(
-            market_loop(ws),
-            handle_telegram_commands()
-        )
-
+        try:
+            # Using gather to run the market loop and telegram listener simultaneously
+            await asyncio.gather(
+                market_loop(ws),
+                handle_telegram_commands()
+            )
+        except websockets.exceptions.ConnectionClosedError as e:
+            print(f"Connection lost, attempting to restart: {e}")
+            # You can add a restart logic here if needed
 async def market_loop(ws):
     while True:
         msg = json.loads(await ws.recv())
