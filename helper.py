@@ -2,32 +2,63 @@ import asyncio
 import json
 import websockets
 import math
+import os
 from telegram import Bot
 
 # --- CONFIGURATION (Keep your current keys here) ---
 import os
 from dotenv import load_dotenv
 
-load_dotenv() # This pulls the data from your hidden .env file
-
-# --- CONFIGURATION (Safe Version) ---
+# --- CONFIGURATION ---
+load_dotenv()
 APP_ID = os.getenv('APP_ID')
 DERIV_TOKEN = os.getenv('DERIV_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
-bot = Bot(token=TELEGRAM_TOKEN)
-last_price = 0  # Global variable to store the latest price
+# The indices you want to track
+SYMBOLS = ["R_100", "R_75", "R_50", "R_25"]
 
-async def check_strategy(candles):
-    global last_price
-    curr = candles[-1]
-    last_price = curr['close'] # Update the latest price
+bot = Bot(token=TELEGRAM_TOKEN)
+# Store latest prices in a dictionary for /price command
+last_prices = {symbol: 0 for symbol in SYMBOLS}
+
+async def check_strategy(candles, symbol_name):
+    """Analyzes patterns and sends signals with the index name"""
+    if len(candles) < 2: return
     
-    # ... (Your existing RSI/BB strategy logic goes here) ...
+    curr = candles[-1]
+    prev = candles[-2]
+    
+    # Update global price tracker for this specific symbol
+    last_prices[symbol_name] = curr['close']
+    
+    pattern_name = None
+    
+    # 1. Bullish Engulfing
+    if curr['close'] > prev['open'] and curr['open'] < prev['close'] and prev['close'] < prev['open']:
+        pattern_name = "Bullish Engulfing 📈"
+    # 2. Bearish Engulfing
+    elif curr['close'] < prev['open'] and curr['open'] > prev['close'] and prev['close'] > prev['open']:
+        pattern_name = "Bearish Engulfing 📉"
+    # 3. Hammer
+    body = abs(curr['close'] - curr['open'])
+    lower_wick = min(curr['open'], curr['close']) - curr['low']
+    if body > 0 and lower_wick > (body * 2) and (curr['high'] - max(curr['open'], curr['close'])) < body:
+        pattern_name = "Hammer 🔨"
+
+    if pattern_name:
+        index_display = symbol_name.replace("R_", "Volatility ")
+        message = (
+            f"🎯 **New Signal Detected!**\n"
+            f"Index: **{index_display}**\n"
+            f"Pattern: {pattern_name}\n"
+            f"Price: {curr['close']}"
+        )
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+        print(f"Signal sent for {index_display}: {pattern_name}")
 
 async def handle_telegram_commands():
-    """Checks for new messages like /price on Telegram every few seconds"""
     last_update_id = 0
     while True:
         try:
@@ -35,85 +66,57 @@ async def handle_telegram_commands():
             for update in updates:
                 last_update_id = update.update_id
                 if update.message and update.message.text == "/price":
-                    await bot.send_message(chat_id=CHAT_ID, text=f"📊 Current Volatility 100 Price: {last_price}")
+                    price_text = "\n".join([f"📊 {s.replace('R_', 'V')}: {last_prices[s]}" for s in SYMBOLS])
+                    await bot.send_message(chat_id=CHAT_ID, text=f"**Current Prices:**\n{price_text}", parse_mode='Markdown')
         except Exception:
             pass
-        await asyncio.sleep(2) # Don't overwhelm the API
+        await asyncio.sleep(2)
+
+async def market_loop(ws):
+    while True:
+        try:
+            msg = json.loads(await ws.recv())
+            # Identify which symbol the data belongs to using the echo_req
+            symbol = msg.get('echo_req', {}).get('ticks_history') or msg.get('ohlc', {}).get('symbol')
+            
+            if 'candles' in msg:
+                await check_strategy(msg['candles'], symbol)
+            elif 'ohlc' in msg:
+                # OHLC data comes every minute to update the strategy
+                await check_strategy([msg['ohlc']], symbol)
+        except websockets.exceptions.ConnectionClosed:
+            break
 
 async def main():
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={APP_ID}"
     
-    # We add ping settings here to stop the "1011 timeout" error
-    # ping_interval sends a heartbeat every 20 seconds
-    async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
-        await ws.send(json.dumps({"authorize": DERIV_TOKEN}))
-        await ws.send(json.dumps({
-            "ticks_history": "R_100", 
-            "count": 50, 
-            "end": "latest", 
-            "granularity": 60, 
-            "style": "candles", 
-            "subscribe": 1
-        }))
-        
-        print("Bot is active and connection is stable. Try /price in Telegram!")
-        await bot.send_message(chat_id=CHAT_ID, text="🤖 Trading Helper is ONLINE. Connection stabilized.")
-        
-        try:
-            # Using gather to run the market loop and telegram listener simultaneously
-            await asyncio.gather(
-                market_loop(ws),
-                handle_telegram_commands()
-            )
-        except websockets.exceptions.ConnectionClosedError as e:
-            print(f"Connection lost, attempting to restart: {e}")
-            # You can add a restart logic here if needed
-async def market_loop(ws):
     while True:
-        msg = json.loads(await ws.recv())
-        if 'candles' in msg:
-            await check_strategy(msg['candles'])
-        elif 'ohlc' in msg:
-            global last_price
-            last_price = msg['ohlc']['close']
+        try:
+            print(f"🔄 Connecting to monitor: {', '.join(SYMBOLS)}")
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                await ws.send(json.dumps({"authorize": DERIV_TOKEN}))
+                
+                # Subscribe to all indices
+                for symbol in SYMBOLS:
+                    await ws.send(json.dumps({
+                        "ticks_history": symbol,
+                        "count": 50,
+                        "end": "latest",
+                        "granularity": 60,
+                        "style": "candles",
+                        "subscribe": 1
+                    }))
+                
+                print("✅ All indices subscribed. Monitoring live...")
+                await bot.send_message(chat_id=CHAT_ID, text="🤖 Multi-Index Bot is ONLINE.")
+                
+                await asyncio.gather(
+                    market_loop(ws),
+                    handle_telegram_commands()
+                )
+        except Exception as e:
+            print(f"⚠️ Connection error: {e}. Retrying in 10s...")
+            await asyncio.sleep(10)
 
-async def check_strategy(candles):
-    global last_price
-    # Need at least 2 candles to compare current vs previous
-    if len(candles) < 2: return
-    
-    curr = candles[-1]
-    prev = candles[-2]
-    last_price = curr['close']
-    
-    # --- Pattern Logic ---
-    pattern_name = None
-    
-    # 1. Bullish Engulfing
-    if curr['close'] > prev['open'] and curr['open'] < prev['close'] and prev['close'] < prev['open']:
-        pattern_name = "Bullish Engulfing 📈"
-        
-    # 2. Bearish Engulfing
-    elif curr['close'] < prev['open'] and curr['open'] > prev['close'] and prev['close'] > prev['open']:
-        pattern_name = "Bearish Engulfing 📉"
-        
-    # 3. Hammer (Bottom reversal)
-    body = abs(curr['close'] - curr['open'])
-    lower_wick = min(curr['open'], curr['close']) - curr['low']
-    if lower_wick > (body * 2) and (curr['high'] - max(curr['open'], curr['close'])) < body:
-        pattern_name = "Hammer 🔨"
-
-    # --- RSI & BB Integration (Optional Confluence) ---
-    # If a pattern is found, send the message
-    if pattern_name:
-        message = (
-            f"🎯 **New Signal Detected!**\n"
-            f"Pattern: {pattern_name}\n"
-            f"Price: {curr['close']}\n"
-            f"Index: Volatility 100"
-        )
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-        print(f"Signal sent: {pattern_name}")
-            
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
