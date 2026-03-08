@@ -59,6 +59,7 @@ async def check_strategy(candles, symbol_name):
         print(f"Signal sent for {index_display}: {pattern_name}")
 
 async def handle_telegram_commands():
+    """Checks for new messages like /price on Telegram every few seconds"""
     last_update_id = 0
     while True:
         try:
@@ -75,17 +76,34 @@ async def handle_telegram_commands():
 async def market_loop(ws):
     while True:
         try:
-            msg = json.loads(await ws.recv())
-            # Identify which symbol the data belongs to using the echo_req
-            symbol = msg.get('echo_req', {}).get('ticks_history') or msg.get('ohlc', {}).get('symbol')
+            raw_msg = await ws.recv()
+            msg = json.loads(raw_msg)
             
+            # 1. Handle Initial History (Full Candles)
             if 'candles' in msg:
-                await check_strategy(msg['candles'], symbol)
+                symbol = msg.get('echo_req', {}).get('ticks_history')
+                if symbol and msg['candles']:
+                    # Update with the latest candle's close price
+                    last_prices[symbol] = msg['candles'][-1]['close']
+                    await check_strategy(msg['candles'], symbol)
+            
+            # 2. Handle Live Updates (The FIX for the "Same Price" Bug)
             elif 'ohlc' in msg:
-                # OHLC data comes every minute to update the strategy
-                await check_strategy([msg['ohlc']], symbol)
+                ohlc_data = msg['ohlc']
+                symbol = ohlc_data.get('symbol')
+                if symbol:
+                    # Capture the live closing price as it changes
+                    current_close = ohlc_data['close']
+                    last_prices[symbol] = current_close
+                    
+                    # Convert single OHLC update to a list so check_strategy works
+                    await check_strategy([ohlc_data], symbol)
+                    
         except websockets.exceptions.ConnectionClosed:
+            print("Connection closed. Reconnecting...")
             break
+        except Exception as e:
+            print(f"Error in market loop: {e}")
 
 async def main():
     url = f"wss://ws.binaryws.com/websockets/v3?app_id={APP_ID}"
